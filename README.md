@@ -8,5 +8,17 @@ To start chapter 12 from here: click *Use this template* on GitHub, name your re
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+cp .env.example .env   # then fill in the values
 flask --app app run
 ```
+
+The app is configured through a `.env` file next to `app.py` (never commit it):
+
+| Variable | Meaning |
+| --- | --- |
+| `DATABASE_URL` | Postgres connection string, e.g. from Neon |
+| `SECRET_KEY` | Random value that signs the session cookie: `python -c "import secrets; print(secrets.token_hex(32))"` |
+| `SITE_NAME` | Title shown in the browser tab and page header |
+| `ADMIN_USERNAME` | The user who can see who booked each slot |
+
+`python smoke_test.py` runs the end-to-end checks in a throwaway schema of the same database.
