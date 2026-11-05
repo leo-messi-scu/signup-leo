@@ -6,11 +6,20 @@
     {% if g.is_admin %}You are the administrator and can see who booked each slot.{% endif %}
   </p>
 
+  <div class="weeknav">
+    <a href="{{ url_for('sheet', week=prev_week.isoformat()) }}">&larr; Previous week</a>
+    <strong>Week of {{ days[0] | dayname }}, {{ days[0].year }}</strong>
+    {% if days[0] != this_week %}<a href="{{ url_for('sheet') }}">This week</a>{% endif %}
+    <a href="{{ url_for('sheet', week=next_week.isoformat()) }}">Next week &rarr;</a>
+  </div>
+
   <table class="sheet">
     <thead>
       <tr>
         <th></th>
-        {% for day in days %}<th>{{ day }}</th>{% endfor %}
+        {% for day in days %}
+          <th{% if day == today %} class="today"{% endif %}>{{ day.strftime('%A') }}<small>{{ day.strftime('%b') }} {{ day.day }}</small></th>
+        {% endfor %}
       </tr>
     </thead>
     <tbody>
@@ -18,17 +27,27 @@
         <tr>
           <th>{{ row.start | ampm }} &ndash; {{ row.end | ampm }}</th>
           {% for cell in row.cells %}
-            <td class="{{ cell.status }}">
-              {% if cell.status == 'free' %}
+            <td class="{{ cell.status }}{% if cell.past %} past{% endif %}">
+              {% if cell.past %}
+                {% if cell.status == 'mine' %}
+                  <span>Yours</span>
+                {% elif cell.status == 'taken' and g.is_admin %}
+                  <span>Taken by <strong>{{ cell.username }}</strong></span>
+                {% elif cell.status == 'taken' %}
+                  <span>Taken</span>
+                {% else %}
+                  <span>&ndash;</span>
+                {% endif %}
+              {% elif cell.status == 'free' %}
                 <form method="post" action="{{ url_for('book') }}">
-                  <input type="hidden" name="weekday" value="{{ cell.weekday }}">
+                  <input type="hidden" name="day" value="{{ cell.day.isoformat() }}">
                   <input type="hidden" name="start" value="{{ cell.start }}">
                   <button type="submit">Book</button>
                 </form>
               {% elif cell.status == 'mine' %}
                 <span>Yours</span>
                 <form method="post" action="{{ url_for('cancel') }}">
-                  <input type="hidden" name="weekday" value="{{ cell.weekday }}">
+                  <input type="hidden" name="day" value="{{ cell.day.isoformat() }}">
                   <input type="hidden" name="start" value="{{ cell.start }}">
                   <button type="submit">Cancel</button>
                 </form>

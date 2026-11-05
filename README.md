@@ -20,5 +20,6 @@ The app is configured through a `.env` file next to `app.py` (never commit it):
 | `SECRET_KEY` | Random value that signs the session cookie: `python -c "import secrets; print(secrets.token_hex(32))"` |
 | `SITE_NAME` | Title shown in the browser tab and page header |
 | `ADMIN_USERNAME` | The user who can see who booked each slot |
+| `TIMEZONE` | Optional IANA zone the office hours are in, e.g. `America/Los_Angeles` (default: the system zone) |
 
 `python smoke_test.py` runs the end-to-end checks in a throwaway schema of the same database.

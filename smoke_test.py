@@ -1,7 +1,9 @@
 import atexit
 import os
+import re
 import sys
 import uuid
+from datetime import timedelta
 from pathlib import Path
 
 os.chdir(Path(__file__).resolve().parent)
@@ -31,7 +33,30 @@ def drop_schema():
 atexit.register(drop_schema)
 appmod.DATABASE_URL = test_url
 appmod.ADMIN_USERNAME = "alice"
+
+# Start from the old weekday-based schema with one booking in it, so that
+# init_db's migration is exercised too.
+this_monday = appmod.week_start(appmod.now().date())
+with psycopg.connect(appmod.DATABASE_URL) as conn:
+    conn.execute(
+        "CREATE TABLE users (id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,"
+        " username TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL)"
+    )
+    conn.execute(
+        "CREATE TABLE bookings (id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,"
+        " weekday INTEGER NOT NULL, start TEXT NOT NULL,"
+        " user_id INTEGER NOT NULL REFERENCES users(id), UNIQUE (weekday, start))"
+    )
+    conn.execute("INSERT INTO users (username, password_hash) VALUES ('legacy', 'x')")
+    conn.execute("INSERT INTO bookings (weekday, start, user_id) VALUES (1, '14:00', 1)")
 appmod.init_db()
+with psycopg.connect(appmod.DATABASE_URL) as conn:
+    row = conn.execute("SELECT day, start FROM bookings").fetchone()
+    assert row == (this_monday + timedelta(days=1), "14:00"), row
+    cols = [r[0] for r in conn.execute(
+        "SELECT column_name FROM information_schema.columns"
+        " WHERE table_schema = current_schema() AND table_name = 'bookings'")]
+    assert "weekday" not in cols and "day" in cols, cols
 appmod.app.config["TESTING"] = True
 c = appmod.app.test_client()
 
@@ -64,7 +89,7 @@ assert "Please log in first" in body(r), body(r)
 
 # Password must be hashed, not stored in plain text.
 with psycopg.connect(appmod.DATABASE_URL) as conn:
-    row = conn.execute("SELECT password_hash FROM users").fetchone()
+    row = conn.execute("SELECT password_hash FROM users WHERE username = 'alice'").fetchone()
 assert row[0] != "pw" and row[0].startswith(("scrypt:", "pbkdf2:")), row
 
 # --- Sign-up sheet ---------------------------------------------------------
@@ -74,56 +99,80 @@ def login(username):
     r = c.post("/login", data={"username": username, "password": "pw"}, follow_redirects=True)
     assert f"Welcome, {username}" in body(r), body(r)
 
+def th_count(html):
+    return len(re.findall(r"<th[ >]", html))
+
 # The sheet needs a login.
 r = c.get("/sheet", follow_redirects=True)
 assert "Please log in first" in body(r), body(r)
 
 c.post("/register", data={"username": "bob", "password": "pw"})
 
+# Work in next week, so every slot is still in the future.
+monday = this_monday + timedelta(days=7)
+wed = monday + timedelta(days=2)
+week = f"/sheet?week={monday.isoformat()}"
+when = f"{appmod.format_day(wed)} at 2:30 pm"
+slot = {"day": wed.isoformat(), "start": "14:30"}
+
 # alice is ADMIN_USERNAME, so she is the administrator.
 login("alice")
 r = c.get("/sheet")
 assert r.status_code == 200 and "You are the administrator" in body(r), body(r)
-assert body(r).count("<th>") == 1 + 5 + 4, body(r)        # corner, 5 days, 4 time rows
-assert body(r).count(">Book</button>") == 20, body(r)      # all 20 slots free
+assert "Week of" in body(r) and "Next week" in body(r), body(r)
+r = c.get(week)
+assert th_count(body(r)) == 1 + 5 + 4, body(r)              # corner, 5 days, 4 time rows
+assert body(r).count(">Book</button>") == 20, body(r)        # all 20 slots free
 assert "2:00 pm" in body(r) and "4:00 pm" in body(r), body(r)
+assert f"{wed:%b} {wed.day}" in body(r), body(r)             # real dates in the header
+assert "This week" in body(r), body(r)                       # link back from another week
+
+# Two weeks ago is entirely in the past: nothing can be booked there.
+past_monday = this_monday - timedelta(days=14)
+r = c.get(f"/sheet?week={past_monday.isoformat()}")
+assert r.status_code == 200 and ">Book</button>" not in body(r), body(r)
 
 # bob is not the administrator; he books a slot.
 login("bob")
-r = c.get("/sheet")
+r = c.get(week)
 assert "You are the administrator" not in body(r), body(r)
-r = c.post("/book", data={"weekday": "2", "start": "14:30"}, follow_redirects=True)
-assert "Booked Wednesday at 2:30 pm" in body(r), body(r)
+r = c.post("/book", data=slot, follow_redirects=True)
+assert f"Booked {when}" in body(r), body(r)
 assert "Yours" in body(r) and ">Cancel</button>" in body(r), body(r)
 assert body(r).count(">Book</button>") == 19, body(r)
 
-# Booking the same slot twice (or an invalid slot) fails.
-r = c.post("/book", data={"weekday": "2", "start": "14:30"}, follow_redirects=True)
+# Booking the same slot twice, an invalid slot, or a past slot fails.
+r = c.post("/book", data=slot, follow_redirects=True)
 assert "already been taken" in body(r), body(r)
-r = c.post("/book", data={"weekday": "5", "start": "14:30"}, follow_redirects=True)
+saturday = monday + timedelta(days=5)
+r = c.post("/book", data={"day": saturday.isoformat(), "start": "14:30"}, follow_redirects=True)
 assert "not a valid slot" in body(r), body(r)
-r = c.post("/book", data={"weekday": "0", "start": "16:00"}, follow_redirects=True)
+r = c.post("/book", data={"day": "not-a-date", "start": "14:30"}, follow_redirects=True)
 assert "not a valid slot" in body(r), body(r)
+r = c.post("/book", data={"day": wed.isoformat(), "start": "16:00"}, follow_redirects=True)
+assert "not a valid slot" in body(r), body(r)
+r = c.post("/book", data={"day": past_monday.isoformat(), "start": "14:30"}, follow_redirects=True)
+assert "in the past" in body(r), body(r)
 
 # A third user sees the slot as taken, without the name, and cannot book or cancel it.
 c.post("/register", data={"username": "carol", "password": "pw"})
 login("carol")
-r = c.get("/sheet")
+r = c.get(week)
 assert ">Taken</span>" in body(r) and "bob" not in body(r).split("<table")[1], body(r)
-r = c.post("/book", data={"weekday": "2", "start": "14:30"}, follow_redirects=True)
+r = c.post("/book", data=slot, follow_redirects=True)
 assert "already been taken" in body(r), body(r)
-r = c.post("/cancel", data={"weekday": "2", "start": "14:30"}, follow_redirects=True)
+r = c.post("/cancel", data=slot, follow_redirects=True)
 assert "no booking in that slot" in body(r) and ">Taken</span>" in body(r), body(r)
 
 # The administrator sees who booked it.
 login("alice")
-r = c.get("/sheet")
+r = c.get(week)
 assert "Taken by <strong>bob</strong>" in body(r), body(r)
 
 # bob cancels his own booking and the slot is free again.
 login("bob")
-r = c.post("/cancel", data={"weekday": "2", "start": "14:30"}, follow_redirects=True)
-assert "Cancelled Wednesday at 2:30 pm" in body(r), body(r)
+r = c.post("/cancel", data=slot, follow_redirects=True)
+assert f"Cancelled {when}" in body(r), body(r)
 assert body(r).count(">Book</button>") == 20, body(r)
 
 print("ALL SMOKE TESTS PASSED")
