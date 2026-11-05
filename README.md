@@ -23,3 +23,13 @@ The app is configured through a `.env` file next to `app.py` (never commit it):
 | `TIMEZONE` | Optional IANA zone the office hours are in, e.g. `America/Los_Angeles` (default: the system zone) |
 
 `python smoke_test.py` runs the end-to-end checks in a throwaway schema of the same database.
+
+## Deploying to Cloud Run
+
+`gcp_setup.sh` prepares the Google Cloud project (billing, APIs, build permission). After that, `deploy.sh` deploys the app:
+
+```
+bash deploy.sh
+```
+
+It stores `DATABASE_URL` and `SECRET_KEY` as Secret Manager secrets (created from `.env` the first time, then left alone unless you pass `--update-secrets`), passes `SITE_NAME`, `ADMIN_USERNAME` and `TIMEZONE` as plain environment variables, and never uploads `.env` itself (`.gcloudignore`). `Procfile` tells Cloud Run to serve the app with gunicorn.
